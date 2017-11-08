@@ -140,6 +140,8 @@ if __name__ == "__main__":
                     # rsp = requests.get(lambda_url + token_dict['dealer'] + '&' + result, timeout=2)
                     # if rsp.status_code == 200:
                     # buzz_done(BUZZ)
+                    # else:
+                    # buzz_error(BUZZ)
                 except requests.exceptions.ConnectionError:
                     time.sleep(1)
         except Exception as e:
