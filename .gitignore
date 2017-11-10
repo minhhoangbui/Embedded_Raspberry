@@ -1,3 +1,4 @@
 *.pyc
 .idea/
 demo.py
+test.py
