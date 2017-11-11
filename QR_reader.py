@@ -204,6 +204,7 @@ if __name__ == "__main__":
                         token_dict['dealer'], timeout=2)
                     print rsp.status_code
                     rs = rsp.json()
+                    print rs
                     if rsp.status_code == 200 and rs['code'] == 'success':
                         token_dict['user'].add(result)
                         led_done(GREEN)
