@@ -6,11 +6,12 @@ import zbar
 import cv2
 from PIL import Image
 import requests
-from wireless import Wireless
 from subprocess import call
 import sys, traceback
 import os
 import subprocess
+import urllib
+import socket
 
 camera = None
 raw = None
@@ -34,9 +35,9 @@ def set_up_gpio(BUZZ, ECHO, TRIG, GREEN, RED):
 def set_up_camera():
     global camera, raw
     camera = PiCamera()
-    camera.resolution = (640, 480)
+    camera.resolution = (720, 720)
     camera.framerate = 32
-    raw = PiRGBArray(camera, size=(640, 480))
+    raw = PiRGBArray(camera, size=(720, 720))
     time.sleep(0.1)
 
 
@@ -53,31 +54,31 @@ def get_distance(TRIG, ECHO):
     return (end - start) / 0.000058
 
 
-def buzz_done(BUZZ):
+def buzz_1(BUZZ):
     GPIO.output(BUZZ, GPIO.LOW)
     time.sleep(0.1)
     GPIO.output(BUZZ, GPIO.HIGH)
 
 
-def led_done(GREEN):
-    GPIO.output(GREEN, GPIO.HIGH)
+def led(color):
+    GPIO.output(color, GPIO.HIGH)
     time.sleep(1)
-    GPIO.output(GREEN, GPIO.LOW)
+    GPIO.output(color, GPIO.LOW)
 
 
-def led_error(RED):
-    GPIO.output(RED, GPIO.HIGH)
-    time.sleep(1)
-    GPIO.output(RED, GPIO.LOW)
-
-
-def buzz_error(BUZZ):
+def buzz_2(BUZZ):
     GPIO.output(BUZZ, GPIO.LOW)
     time.sleep(0.1)
     GPIO.output(BUZZ, GPIO.HIGH)
     time.sleep(0.1)
     GPIO.output(BUZZ, GPIO.LOW)
     time.sleep(0.1)
+    GPIO.output(BUZZ, GPIO.HIGH)
+
+
+def buzz_long(BUZZ):
+    GPIO.output(BUZZ, GPIO.LOW)
+    time.sleep(1)
     GPIO.output(BUZZ, GPIO.HIGH)
 
 
@@ -113,11 +114,13 @@ def scan_qr(BUZZ, RED):
             raw.truncate(0)
 
 
-def parsing_token(decoded):
+def parsing_token(decoded, RED, BUZZ):
     if decoded.find('setup') != -1:
         tmp = decoded.split('/')
         return (tmp[-3], tmp[-2], tmp[-1])
     elif decoded.find('shutdown') != -1:
+        led(RED)
+        buzz_2(BUZZ)
         call(decoded, shell=True)
     else:
         return decoded[decoded.find('n=') + 2:]
@@ -146,8 +149,17 @@ def connect_wifi(ssid, psk):
     p.wait()
     os.system("sudo pkill -f dhclient")
     if a == 'OK' and b == 'OK' and c == 'OK' and d == 'OK':
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        print s.getsockname()[0]
         return True
     return False
+
+
+def insert_dealer(token):
+    file = open('dealer_list.txt', 'w')
+    file.write("\n%s" % token)
+    file.close()
 
 
 if __name__ == "__main__":
@@ -156,47 +168,63 @@ if __name__ == "__main__":
     ECHO = 18
     GREEN = 20
     RED = 21
+    # Try to get the last dealer in the list
+    try:
+        token_dict['dealer'] = subprocess.check_output(['tail', '-1', 'dealer_list.txt'])
+    except Exception as e:
+        print e
+        pass
+    # Set up the system
     try:
         set_up_gpio(BUZZ, ECHO, TRIG, GREEN, RED)
+        led(GREEN)
+        buzz_2(BUZZ)
         set_up_camera()
-        led_done(GREEN)
-        buzz_done(BUZZ)
     except Exception as e:
-        # print(e)
-        # traceback.print_exc(file=sys.stdout)
+        print(e)
+        traceback.print_exc(file=sys.stdout)
         os.system("sudo reboot")
+    # Check Internet Connection
 
     while True:
+        try:
+            subprocess.check_output("ping -W 1 -c 2 8.8.8.8", shell=True)
+            GPIO.output(RED, GPIO.LOW)
+        except Exception:
+            GPIO.output(RED, GPIO.HIGH)
+
         dist = get_distance(TRIG, ECHO)
-        time.sleep(0.1)
-        if dist < 15. and dist > 6.:
+        time.sleep(0.05)
+        if dist < 15. and dist > 5.:
             decoded = scan_qr(BUZZ, RED)
         else:
             continue
         if decoded is None:
             continue
+        else:
+            led(GREEN)
         try:
-            result = parsing_token(decoded)
+            result = parsing_token(decoded, RED, BUZZ)
+            print result
             is_dealer_token = isinstance(result, tuple)
             if is_dealer_token:
-                led_done(GREEN)
-                buzz_done(BUZZ)
                 ssid = result[0]
                 psk = result[1]
-                token = result[2]
+                token_dict['dealer'] = result[2]
+                insert_dealer(result[2])
                 try:
                     if not connect_wifi(ssid, psk):
                         raise RuntimeError
+                    else:
+                        led(GREEN)
+                        buzz_2(BUZZ)
                 except RuntimeError as e:
-                    led_done(RED)
-                    buzz_error(BUZZ)
-                    print "Cannot connect WIfi"
+                    led(RED)
+                    buzz_long(BUZZ)
+                    print "Cannot connect Wifi"
                     continue
-                if token_dict['dealer'] is None:
-                    token_dict['dealer'] = token
-                continue
-            if not result in token_dict['user'] and not token_dict['dealer'] is None:
-                print token_dict['dealer']
+            elif not result in token_dict['user'] and not token_dict['dealer'] is None:
+                print "user part"
                 print result
                 try:
                     rsp = requests.get(
@@ -204,14 +232,15 @@ if __name__ == "__main__":
                         token_dict['dealer'], timeout=2)
                     print rsp.status_code
                     rs = rsp.json()
-                    print rs
+                    print (rs)
                     if rsp.status_code == 200 and rs['code'] == 'success':
                         token_dict['user'].add(result)
-                        led_done(GREEN)
-                        buzz_done(BUZZ)
+                        print 'Sent ' + result
+                        led(GREEN)
+                        buzz_1(BUZZ)
                     else:
-                        led_done(RED)
-                        buzz_error(BUZZ)
+                        led(RED)
+                        buzz_long(BUZZ)
                 except requests.exceptions.ConnectionError:
                     print 'Connection error'
                     time.sleep(1)
@@ -219,4 +248,5 @@ if __name__ == "__main__":
             print(e)
             traceback.print_exc(file=sys.stdout)
             pass
+
 
